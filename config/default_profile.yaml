@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────
+# Client Research Profile
+# Edit this file to customise the grant search for your client.
+# ─────────────────────────────────────────────────────────────────
+
+name: "IIT Bombay – Department of Public Health & Biomedical Engineering"
+
+# Options: university | ngo | hospital | social_enterprise
+institution_type: university
+
+research_areas:
+  - public health
+  - infectious disease
+  - maternal and child health
+  - biomedical devices
+  - digital health
+  - epidemiology
+
+keywords:
+  - vaccine
+  - diagnostics
+  - low-cost medical devices
+  - global health
+  - India
+  - rural health
+  - point-of-care
+  - neglected tropical diseases
+  - antimicrobial resistance
+
+focus_geographies:
+  - India
+  - South Asia
+  - Global
+
+eligibility_notes:
+  - Indian institution
+  - PI must be Indian national or hold NRI/OCI status
+  - Collaborations with US/UK/EU institutions welcome
+
+max_funding_needed: "$500,000"
