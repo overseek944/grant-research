@@ -144,6 +144,22 @@ async def run_demo(profile_path: str, open_browser: bool = False):
     report_path = generate_report(analysed, profile_obj, sources_found, institution_profile)
     print(f"      ✓ Report saved: {report_path}")
 
+    # ── Push structured JSON to grant-runs repo (if configured) ──────────
+    import os
+    grant_runs_path = os.getenv("GRANT_RUNS_PATH", "")
+    if grant_runs_path:
+        try:
+            from src.report.json_writer import write_run_json
+            from src.report.git_manager import push_to_grant_runs
+            run_data = write_run_json(analysed, profile_obj, sources_found, institution_profile)
+            pushed = push_to_grant_runs(run_data, profile.name, grant_runs_path)
+            if pushed:
+                print(f"      ✓ Data pushed to grant-runs ({grant_runs_path})")
+            else:
+                print(f"      ⚠ grant-runs push failed (check logs)")
+        except Exception as e:
+            print(f"      ⚠ grant-runs push skipped: {e}")
+
     print()
     print("=" * 60)
     print(f"  Done! Report: {report_path}")
