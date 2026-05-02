@@ -90,21 +90,25 @@ async def run_demo(profile_path: str, open_browser: bool = False):
     else:
         print(f"      ⚠ Web enrichment skipped — using YAML profile as-is")
 
-    print("  [1/4] Building institution research profile + searching grant databases...")
-    inst_task = _safe_dict(get_institution_profile, profile.name, label="OpenAlex")
-    grant_tasks = asyncio.gather(
+    # ── Phase A: OpenAlex profile — sequential so concepts enrich keywords ──
+    print("  [1/5] Building institution research profile (OpenAlex)...")
+    institution_profile = await _safe_dict(get_institution_profile, profile.name, label="OpenAlex")
+    if institution_profile.get("concepts"):
+        _merge_openalex_keywords(profile, institution_profile["concepts"])
+        print(f"      ✓ Research fingerprint: {', '.join(institution_profile['concepts'][:4])}…")
+        print(f"        Keywords now ({len(profile.keywords)}): {', '.join(profile.keywords[:8])}…")
+    else:
+        print(f"      ⚠ OpenAlex: institution not found — using web-enriched keywords only")
+
+    # ── Phase B: Grant searches — now use fully enriched keyword set ────────
+    print("  [2/5] Searching grant databases with enriched profile...")
+    results = await asyncio.gather(
         _safe_run(search_grants_gov, profile, 25, label="Grants.gov"),
         _safe_run(search_nih, profile, 20, label="NIH"),
         _safe_run(search_nsf, profile, 20, label="NSF"),
         _safe_run(search_eu_horizon, profile, 20, label="EU Horizon"),
         _safe_run(search_india_grants, profile, 25, label="India Grants"),
     )
-    institution_profile, results = await asyncio.gather(inst_task, grant_tasks)
-
-    if institution_profile.get("concepts"):
-        print(f"      ✓ Research fingerprint: {', '.join(institution_profile['concepts'][:4])}…")
-    else:
-        print(f"      ⚠ OpenAlex: institution profile not found (using YAML profile only)")
 
     all_grants = []
     sources_found = []
@@ -126,9 +130,9 @@ async def run_demo(profile_path: str, open_browser: bool = False):
             seen.add(key)
             unique.append(g)
 
-    print(f"\n  [2/4] Collected {len(unique)} unique opportunities (deduped from {len(all_grants)})")
+    print(f"\n  [3/5] Collected {len(unique)} unique opportunities (deduped from {len(all_grants)})")
 
-    print("\n  [3/4] Running 3-stage Claude analysis (screen → funder intel → deep briefs → strategy memos)...")
+    print("\n  [4/5] Running 3-stage Claude analysis (screen → funder intel → deep briefs → strategy memos)...")
     print("        This takes 5–9 minutes. Pipeline: 2 screen batches → 3 deep batches → 5 strategy memos.")
     try:
         analysed = await analyze_grants_with_claude(unique, profile, institution_profile)
@@ -140,7 +144,7 @@ async def run_demo(profile_path: str, open_browser: bool = False):
         print(f"      ⚠ Claude analysis skipped: {e}")
         analysed = unique
 
-    print("\n  [4/4] Generating HTML report...")
+    print("\n  [5/5] Generating HTML report...")
     report_path = generate_report(analysed, profile_obj, sources_found, institution_profile)
     print(f"      ✓ Report saved: {report_path}")
 
@@ -188,6 +192,13 @@ async def _safe_dict(fn, *args, label=""):
     except Exception as e:
         print(f"      ✗ {label}: {type(e).__name__}: {e}")
         return {}
+
+
+def _merge_openalex_keywords(profile, concepts: list[str]):
+    """Add OpenAlex publication-derived concepts into profile keywords (no duplicates)."""
+    existing = {k.lower() for k in profile.keywords}
+    new_kw = [c for c in concepts if c.lower() not in existing]
+    profile.keywords = (profile.keywords + new_kw)[:20]
 
 
 # ── WORKER MODE ──────────────────────────────────────────────────────────
