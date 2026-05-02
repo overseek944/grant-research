@@ -62,6 +62,7 @@ async def run_demo(profile_path: str, open_browser: bool = False):
     from src.activities.india_grants import search_india_grants
     from src.activities.open_alex import get_institution_profile
     from src.activities.web_profile import enrich_profile_from_web
+    from src.activities.research_keywords import discover_research_keywords
     from src.activities.funder_intel import enrich_with_funder_intel
     from src.activities.ai_analysis import analyze_grants_with_claude
     from src.report.generator import generate_report
@@ -74,34 +75,54 @@ async def run_demo(profile_path: str, open_browser: bool = False):
     web_data = await _safe_dict(enrich_profile_from_web, profile, label="Web enrichment")
     if web_data.get("keywords"):
         old_kw_count = len(profile.keywords)
-        # Merge: web keywords take precedence, keep any YAML-only ones not already covered
-        merged_kw = web_data["keywords"]
+        # Web keywords take precedence; existing YAML keywords appended if not covered
+        web_kws = web_data["keywords"]
+        existing_lower = {k.lower() for k in web_kws}
         for kw in profile.keywords:
-            if kw.lower() not in {k.lower() for k in merged_kw}:
-                merged_kw.append(kw)
-        profile.keywords = merged_kw[:15]
+            if kw.lower() not in existing_lower:
+                web_kws.append(kw)
+        profile.keywords = web_kws[:20]
         if web_data.get("research_areas"):
             profile.research_areas = web_data["research_areas"]
         summary = web_data.get("web_summary", "")
-        print(f"      ✓ Web-enriched: {len(merged_kw)} keywords (was {old_kw_count})")
+        print(f"      ✓ Web-enriched: {len(profile.keywords)} keywords (was {old_kw_count})")
         print(f"        Keywords: {', '.join(profile.keywords[:6])}…")
         if summary:
             print(f"        Summary: {summary}")
     else:
         print(f"      ⚠ Web enrichment skipped — using YAML profile as-is")
 
-    # ── Phase A: OpenAlex profile — sequential so concepts enrich keywords ──
-    print("  [1/5] Building institution research profile (OpenAlex)...")
+    # ── Phase A: Publication keyword discovery (sequential, before searches) ──
+    print("  [1/6] Discovering keywords from research publications...")
+    pub_data = await _safe_dict(discover_research_keywords, profile, label="Publication keywords")
+    if pub_data.get("keywords"):
+        before = len(profile.keywords)
+        _merge_keywords(profile, pub_data["keywords"], cap=25)
+        if pub_data.get("topics"):
+            _merge_areas(profile, pub_data["topics"])
+        added = len(profile.keywords) - before
+        print(f"      ✓ Publications: +{added} new keywords → {len(profile.keywords)} total")
+        print(f"        Keywords: {', '.join(profile.keywords[:8])}…")
+        if pub_data.get("research_summary"):
+            print(f"        Summary: {pub_data['research_summary']}")
+    else:
+        print(f"      ⚠ Publication discovery skipped — no academic data found")
+
+    # ── Phase B: OpenAlex institution profile ────────────────────────────────
+    print("  [2/6] Building institution research profile (OpenAlex)...")
     institution_profile = await _safe_dict(get_institution_profile, profile.name, label="OpenAlex")
     if institution_profile.get("concepts"):
-        _merge_openalex_keywords(profile, institution_profile["concepts"])
+        before = len(profile.keywords)
+        _merge_keywords(profile, institution_profile["concepts"], cap=30)
+        added = len(profile.keywords) - before
         print(f"      ✓ Research fingerprint: {', '.join(institution_profile['concepts'][:4])}…")
-        print(f"        Keywords now ({len(profile.keywords)}): {', '.join(profile.keywords[:8])}…")
+        if added:
+            print(f"        +{added} concept keywords → {len(profile.keywords)} total")
     else:
-        print(f"      ⚠ OpenAlex: institution not found — using web-enriched keywords only")
+        print(f"      ⚠ OpenAlex: institution not found — using publication-enriched keywords")
 
-    # ── Phase B: Grant searches — now use fully enriched keyword set ────────
-    print("  [2/5] Searching grant databases with enriched profile...")
+    # ── Phase C: Grant searches — now with fully enriched keyword set ────────
+    print("  [3/6] Searching grant databases with enriched profile...")
     results = await asyncio.gather(
         _safe_run(search_grants_gov, profile, 25, label="Grants.gov"),
         _safe_run(search_nih, profile, 20, label="NIH"),
@@ -130,9 +151,9 @@ async def run_demo(profile_path: str, open_browser: bool = False):
             seen.add(key)
             unique.append(g)
 
-    print(f"\n  [3/5] Collected {len(unique)} unique opportunities (deduped from {len(all_grants)})")
+    print(f"\n  [4/6] Collected {len(unique)} unique opportunities (deduped from {len(all_grants)})")
 
-    print("\n  [4/5] Running 3-stage Claude analysis (screen → funder intel → deep briefs → strategy memos)...")
+    print("\n  [5/6] Running 3-stage Claude analysis (screen → funder intel → deep briefs → strategy memos)...")
     print("        This takes 5–9 minutes. Pipeline: 2 screen batches → 3 deep batches → 5 strategy memos.")
     try:
         analysed = await analyze_grants_with_claude(unique, profile, institution_profile)
@@ -144,7 +165,7 @@ async def run_demo(profile_path: str, open_browser: bool = False):
         print(f"      ⚠ Claude analysis skipped: {e}")
         analysed = unique
 
-    print("\n  [5/5] Generating HTML report...")
+    print("\n  [6/6] Generating HTML report...")
     report_path = generate_report(analysed, profile_obj, sources_found, institution_profile)
     print(f"      ✓ Report saved: {report_path}")
 
@@ -194,11 +215,18 @@ async def _safe_dict(fn, *args, label=""):
         return {}
 
 
-def _merge_openalex_keywords(profile, concepts: list[str]):
-    """Add OpenAlex publication-derived concepts into profile keywords (no duplicates)."""
+def _merge_keywords(profile, new_kws: list[str], cap: int = 30):
+    """Merge new keywords into profile, deduplicating case-insensitively."""
     existing = {k.lower() for k in profile.keywords}
-    new_kw = [c for c in concepts if c.lower() not in existing]
-    profile.keywords = (profile.keywords + new_kw)[:20]
+    added = [k for k in new_kws if k.lower() not in existing]
+    profile.keywords = (profile.keywords + added)[:cap]
+
+
+def _merge_areas(profile, new_areas: list[str]):
+    """Merge new research areas, deduplicating case-insensitively."""
+    existing = {a.lower() for a in profile.research_areas}
+    added = [a for a in new_areas if a.lower() not in existing]
+    profile.research_areas = (profile.research_areas + added)[:10]
 
 
 # ── WORKER MODE ──────────────────────────────────────────────────────────
